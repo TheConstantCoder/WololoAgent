@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AoE2 Game Data",
+  "description": "Complete game data for Age of Empires 2: Definitive Edition",
+  "type": "object",
+  "required": ["meta", "units", "civilizations"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["version", "extracted_at", "source"],
+      "properties": {
+        "version": { "type": "string", "description": "Game patch version" },
+        "extracted_at": { "type": "string", "format": "date-time" },
+        "source": { "type": "string", "description": "Data source (e.g., game files, manual)" }
+      }
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name", "class", "age", "cost", "hp", "attack", "armor"],
+        "properties": {
+          "name": { "type": "string" },
+          "class": { "type": "string", "enum": ["infantry", "archer", "cavalry", "siege", "monk", "naval", "unique", "building"] },
+          "age": { "type": "string", "enum": ["dark", "feudal", "castle", "imperial", "unknown"] },
+          "cost": {
+            "type": "object",
+            "properties": {
+              "food": { "type": "integer" },
+              "wood": { "type": "integer" },
+              "gold": { "type": "integer" },
+              "stone": { "type": "integer" }
+            }
+          },
+          "hp": { "type": "integer" },
+          "attack": { "type": "integer" },
+          "armor": {
+            "type": "object",
+            "properties": {
+              "melee": { "type": "integer" },
+              "pierce": { "type": "integer" }
+            }
+          },
+          "range": { "type": "number" },
+          "speed": { "type": "number" },
+          "training_time": { "type": "integer" },
+          "counters": {
+            "type": "object",
+            "properties": {
+              "strong_vs": { "type": "array", "items": { "type": "string" } },
+              "weak_vs": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "bonuses": { "type": "array", "items": { "type": "string" } },
+          "upgrade_line": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "civilizations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name", "bonuses"],
+        "properties": {
+          "name": { "type": "string" },
+          "bonuses": { "type": "array", "items": { "type": "string" } },
+          "team_bonus": { "type": ["string", "null"] },
+          "unique_unit": { "type": ["string", "null"] },
+          "unique_techs": {
+            "type": "object",
+            "properties": {
+              "castle": { "type": "string" },
+              "imperial": { "type": "string" }
+            }
+          },
+          "strengths": { "type": "array", "items": { "type": "string" } },
+          "weaknesses": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "technologies": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "age": { "type": "string" },
+          "cost": { "type": "object" },
+          "effect": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}
