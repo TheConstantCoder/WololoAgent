@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wololo-coach"
+version = "0.1.0"
+description = "Real-time, voice-activated AoE2 battle coach powered by Gemini 2.5 Flash"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+
+dependencies = [
+    # Server
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "google-genai>=1.0.0",
+    "websockets>=14.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+
+    # Client
+    "pynput>=1.7.7",
+    "sounddevice>=0.5.0",
+    "numpy>=2.0.0",
+
+    # Data
+    "genieutils-py>=0.1.0",
+    "jsonschema>=4.23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "httpx>=0.28.0",
+    "ruff>=0.9.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["server*", "client*", "data*"]
