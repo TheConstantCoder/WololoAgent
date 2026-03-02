@@ -28,6 +28,14 @@ Thumbs.db
 
 # Data (generated)
 data/game_data.json
+data/game_data_raw.json
+data/community/
+data/build_game_data.py
+
+# Gemini/AI Metadata
+.gemini/
+gemini-live-api.skill
+skills/
 
 # Docker
 *.log

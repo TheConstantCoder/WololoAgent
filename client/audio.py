@@ -43,33 +43,52 @@ class Microphone:
             self.stream = None
 
     def get_audio(self):
-        """Get audio chunks from the queue."""
+        """Get audio chunks from the queue.
+        
+        Returns:
+            Tuple of (bytes, peak_amplitude, rms_volume)
+        """
         while not self.queue.empty():
-            yield self.queue.get().tobytes()
+            data = self.queue.get()
+            peak = np.max(np.abs(data))
+            # Calculate Root Mean Square (RMS) for more stable VAD
+            rms = np.sqrt(np.mean(data.astype(np.float32)**2))
+            yield data.tobytes(), peak, rms
 
 
 class Speaker:
-    """Handles audio playback."""
+    """Handles audio playback via a byte-level buffer.
 
-    def __init__(self, sample_rate: int = 24000):
+    Incoming PCM bytes are appended to a lock-protected buffer.
+    The sounddevice callback drains exactly the number of frames it
+    needs each invocation, eliminating chunk-size mismatches that
+    cause pitch / speed distortion.
+    """
+
+    def __init__(self, sample_rate: int = 24000, blocksize: int = 960):
         self.sample_rate = sample_rate
-        self.queue = queue.Queue()
+        self.blocksize = blocksize  # 960 samples = 40 ms at 24 kHz
+        self._buffer = bytearray()
+        self._lock = __import__('threading').Lock()
         self.stream = None
 
     def _callback(self, outdata, frames, time, status):
         """Internal callback for sounddevice."""
         if status:
             print(f"Speaker Status: {status}")
-        
-        try:
-            data = self.queue.get_nowait()
-            if len(data) < len(outdata):
-                outdata[:len(data)] = data
-                outdata[len(data):].fill(0)
+
+        # Each frame is 1 channel × 2 bytes (int16)
+        needed = frames * 2
+        with self._lock:
+            if len(self._buffer) >= needed:
+                chunk = bytes(self._buffer[:needed])
+                del self._buffer[:needed]
             else:
-                outdata[:] = data[:len(outdata)]
-        except queue.Empty:
-            outdata.fill(0)
+                # Drain whatever is left, pad the rest with silence
+                chunk = bytes(self._buffer) + b'\x00' * (needed - len(self._buffer))
+                self._buffer.clear()
+
+        outdata[:] = np.frombuffer(chunk, dtype='int16').reshape(-1, 1)
 
     def start(self):
         """Start playback stream."""
@@ -77,7 +96,8 @@ class Speaker:
             samplerate=self.sample_rate,
             channels=1,
             dtype='int16',
-            callback=self._callback
+            blocksize=self.blocksize,
+            callback=self._callback,
         )
         self.stream.start()
 
@@ -89,28 +109,16 @@ class Speaker:
             self.stream = None
 
     def play(self, pcm_bytes: bytes):
-        """Queue PCM bytes for playback."""
-        # Convert bytes back to numpy int16 array
-        data = np.frombuffer(pcm_bytes, dtype='int16')
-        
-        # Split into small chunks if needed to avoid blocking callback for too long
-        # or just put in queue if it matches block size expectations
-        # For simplicity, we just put it in.
-        # But sounddevice callback expects 'frames' amount of data.
-        # We might need to chunk it here.
-        chunk_size = 512 # matching some reasonable block size
-        for i in range(0, len(data), chunk_size):
-            chunk = data[i:i + chunk_size]
-            # Ensure chunk is the right shape (frames, channels)
-            if len(chunk) < chunk_size:
-                padding = np.zeros(chunk_size - len(chunk), dtype='int16')
-                chunk = np.concatenate([chunk, padding])
-            self.queue.put(chunk.reshape(-1, 1))
+        """Append raw PCM bytes to the playback buffer."""
+        with self._lock:
+            self._buffer.extend(pcm_bytes)
+
+    def is_playing(self) -> bool:
+        """Check if there is audio in the buffer or currently playing."""
+        with self._lock:
+            return len(self._buffer) > 0
 
     def clear(self):
-        """Clear the playback queue (for interruptions)."""
-        while not self.queue.empty():
-            try:
-                self.queue.get_nowait()
-            except queue.Empty:
-                break
+        """Clear the playback buffer (for interruptions)."""
+        with self._lock:
+            self._buffer.clear()
