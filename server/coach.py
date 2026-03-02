@@ -52,27 +52,62 @@ class Coach:
 
     def _construct_system_instruction(self) -> str:
         """Construct the system instruction for the coach persona."""
-        units = list(self.game_data.get("units", {}).keys())
-        units_summary = ", ".join(units[:30])
-        
-        instruction = f"""You are the 'Wololo Coach', an expert Age of Empires II: Definitive Edition strategic advisor.
-Your goal is to provide concise, actionable, and accurate mid-game advice to players.
+        # Build unit summary grouped by class
+        units_by_class: dict[str, list[str]] = {}
+        for u in self.game_data.get("units", {}).values():
+            cls = u.get("class", "other")
+            if cls == "building":
+                continue  # skip buildings for brevity
+            units_by_class.setdefault(cls, []).append(u["name"])
 
-KNOWLEDGE BASE:
-You have access to canonical game data for units, civilizations, and technologies.
-Units available in your data include: {units_summary}... (and many more).
+        units_block = ""
+        for cls, names in sorted(units_by_class.items()):
+            units_block += f"  {cls.title()}: {', '.join(sorted(set(names)))}\n"
 
-GUIDELINES:
-1. Be concise. Players are in the middle of a battle and need quick answers.
-2. Be strategic. Don't just give stats; explain WHY a certain unit or technology is a good counter.
-3. Be accurate. Use the provided game data to ground your answers.
-4. Tone: Helpful, authoritative, and slightly thematic (use 'Wololo' occasionally but don't overdo it).
-5. If you don't know an answer or it's not in the data, prioritize general high-level AoE2 strategy.
+        # Build civilization summary
+        civs = self.game_data.get("civilizations", {})
+        civ_lines = []
+        for civ in sorted(civs.values(), key=lambda c: c.get("name", "")):
+            name = civ.get("name", "")
+            desc = civ.get("description", "")
+            uu = civ.get("unique_unit", "")
+            bonuses = civ.get("bonuses", [])
+            tb = civ.get("team_bonus", "")
+            bonus_str = "; ".join(bonuses[:3])  # top 3 to stay concise
+            civ_lines.append(f"  {name} ({desc}): UU={uu}. {bonus_str}. TB: {tb}")
 
-When asked about counters, consider armor classes:
-- Spearmen (SPRMN) are strong vs Cavalry.
-- Skirmishers (SKIRM) are strong vs Archers.
-- Mangonels (MANGN) are strong vs grouped Archers and Buildings.
+        civs_block = "\n".join(civ_lines[:45])  # cap at 45 civs for token budget
+
+        instruction = f"""CRITICAL DIRECTIVE:
+1. YOU ARE the 'Wololo Coach'. 
+2. ACT as a real-time battle advisor. 
+3. NEVER EXPLAIN your reasoning or show your thought process.
+4. NEVER use asterisks, bold text, or markdown headers.
+5. NEVER start with conversational filler (e.g., "I see you are...", "Analyzing...").
+6. ONLY SPEAK the advice.
+7. DO NOT use words like "Observing", "Analyzing", "Confirming", or "Evaluating".
+8. BE EXTREMELY CONCISE. 1-2 sharp sentences only.
+
+KNOWLEDGE BASE — Age of Empires II: Definitive Edition
+
+UNITS:
+{units_block}
+CIVS:
+{civs_block}
+
+CORE COUNTERS:
+  Spears/Halbs → Cavalry
+  Skirms → Archers
+  Knights → Archers/Siege
+  Mangonels → Massed Archers/Infantry
+  Monks → Knights/Elephants
+  Camels → Cavalry
+  Rams → Buildings/Arrows
+  BBC → Castles/Siege
+
+ADVICE STYLE:
+Provide tactical advice based on counters and civ bonuses.
+Example: " Franks are strong. Go Knights and use your extra HP. Watch out for enemy Pikemen."
 """
         return instruction
 

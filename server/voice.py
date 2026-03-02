@@ -1,96 +1,182 @@
 """Gemini Live API voice handler.
 
-Manages bidirectional WebSocket audio streaming with Gemini 2.5 Flash Live API.
+Streams audio between a local WebSocket client and the Gemini Multimodal
+Live API.  The key insight is that ``session.receive()`` yields messages
+for **one model turn only** (it breaks after ``turn_complete``).  We
+therefore wrap it in an outer ``while True`` so the receiver loops back
+and picks up every subsequent turn.
 """
 
 import asyncio
 import json
 import traceback
-from typing import AsyncGenerator
-
 from google import genai
 from google.genai import types
 from fastapi import WebSocket
-
 from server.config import settings
 from server.coach import coach
 
 
 class VoiceHandler:
-    """Handles bidirectional voice streaming between client and Gemini."""
-
     def __init__(self):
-        # The client is initialized in Coach, we'll use that instance if possible 
-        # or create a local one with the correct version.
         self.client = genai.Client(
             api_key=settings.gemini_api_key,
-            http_options=types.HttpOptions(api_version='v1alpha')
+            http_options={'api_version': 'v1alpha'}
         )
         self.model_id = settings.gemini_model
 
     async def handle_session(self, websocket: WebSocket):
-        """Main loop for a voice coaching session."""
         await websocket.accept()
         print("[SERVER] Client connected.")
-        
-        # Grounding instruction passed in config
-        config = {
-            'system_instruction': coach.system_instruction,
-            'response_modalities': ['AUDIO'],
-        }
+
+        config = types.LiveConnectConfig(
+            system_instruction=types.Content(
+                parts=[types.Part(text=coach.system_instruction)]
+            ),
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name='Aoede'
+                    )
+                )
+            ),
+        )
 
         try:
-            print(f"[SERVER] Connecting to Gemini ({self.model_id})...")
-            async with self.client.aio.live.connect(model=self.model_id, config=config) as session:
-                print("[SERVER] Session established.")
-                
-                async def gemini_to_client():
-                    try:
-                        async for message in session.receive():
-                            if message.server_content:
-                                model_turn = message.server_content.model_turn
-                                if model_turn:
-                                    for part in model_turn.parts:
-                                        if part.inline_data:
-                                            # Forward Gemini's voice to client
-                                            await websocket.send_bytes(part.inline_data.data)
-                                            
-                            if message.server_content and message.server_content.interrupted:
-                                await websocket.send_json({"type": "interrupted"})
-                    except Exception as e:
-                        print(f"[SERVER] Gemini Output Error: {e}")
+            async with self.client.aio.live.connect(
+                model=self.model_id, config=config
+            ) as session:
+                print("[SERVER] Gemini connection established.")
 
-                async def client_to_gemini():
+                # --- Gemini → Client ----------------------------------------
+                async def gemini_to_client():
+                    """Read model responses and forward audio to the client.
+
+                    ``session.receive()`` is an async-iterator that breaks
+                    after each ``turn_complete``.  The outer ``while True``
+                    re-enters it so we keep listening for every new turn.
+                    """
+                    try:
+                        while True:  # <-- re-enter receive() after each turn
+                            async for message in session.receive():
+                                if websocket.client_state.value == 3:  # DISCONNECTED
+                                    break
+
+                                # DEBUG: packet flags
+                                has_content = message.server_content is not None
+                                has_setup  = message.setup_complete is not None
+                                has_meta   = message.usage_metadata is not None
+                                print(
+                                    f"[DEBUG] Gemini Msg | Content: {has_content}"
+                                    f" | Setup: {has_setup} | Meta: {has_meta}"
+                                )
+
+                                if message.server_content:
+                                    content = message.server_content
+                                    if content.model_turn:
+                                        for part in content.model_turn.parts:
+                                            if part.inline_data:
+                                                try:
+                                                    await websocket.send_bytes(
+                                                        part.inline_data.data
+                                                    )
+                                                except Exception:
+                                                    break
+                                            if part.text:
+                                                print(
+                                                    f"[COACH]: {part.text[:100]}"
+                                                )
+
+                                    if content.turn_complete:
+                                        print("[SERVER] Turn complete.")
+                                    if content.interrupted:
+                                        print("[SERVER] Turn interrupted.")
+                                        try:
+                                            await websocket.send_json({"type": "interrupted"})
+                                        except Exception:
+                                            break
+
+                                if message.usage_metadata:
+                                    print("[SERVER] Usage metadata received.")
+
+                            # receive() iterator exhausted (turn done) — loop
+                            print("[SERVER] Ready for next turn.")
+
+                    except Exception as e:
+                        print(f"[SERVER] Gemini Receiver Error: {e}")
+                        traceback.print_exc()
+
+                # --- Client → Queue -----------------------------------------
+                input_queue: asyncio.Queue = asyncio.Queue()
+
+                async def websocket_receiver():
+                    """Drain the client WebSocket into an async queue."""
                     try:
                         while True:
-                            message = await websocket.receive()
-                            
-                            if "bytes" in message:
-                                # Forward audio data from client to Gemini
-                                await session.send(
-                                    input={"data": message["bytes"], "mime_type": "audio/pcm;rate=16000"},
-                                    end_of_turn=False
-                                )
-                            elif "text" in message:
-                                msg = json.loads(message["text"])
-                                if msg.get("type") == "end_of_turn":
-                                    print("[SERVER] User finished speaking. Prompting Gemini...")
-                                    # Trigger model response with a textual cue
-                                    await session.send(input="Please respond to the audio above.", end_of_turn=True)
-                    except Exception as e:
-                        print(f"[SERVER] Client Input Error: {e}")
+                            data = await websocket.receive()
+                            await input_queue.put(data)
+                    except Exception:
+                        pass
 
-                await asyncio.gather(gemini_to_client(), client_to_gemini())
+                # --- Queue → Gemini -----------------------------------------
+                async def queue_processor():
+                    """Process queued messages and forward to Gemini.
+
+                    Audio blobs go via ``send_realtime_input`` (with
+                    automatic VAD for turn-end detection).
+                    Text queries go via ``send_client_content``.
+                    """
+                    try:
+                        while True:
+                            data = await input_queue.get()
+
+                            if "bytes" in data:
+                                # Audio chunk — stream as realtime input
+                                await session.send_realtime_input(
+                                    media=types.Blob(
+                                        data=data["bytes"],
+                                        mime_type="audio/pcm;rate=16000",
+                                    )
+                                )
+
+                            elif "text" in data:
+                                msg = json.loads(data["text"])
+                                t = msg.get("type")
+
+                                if t == "text_query":
+                                    query = msg.get("text", "")
+                                    print(
+                                        f"[SERVER] Text query: {query}"
+                                    )
+                                    await session.send_client_content(
+                                        turns=types.Content(
+                                            role="user",
+                                            parts=[types.Part(text=query)],
+                                        ),
+                                        turn_complete=True,
+                                    )
+
+                            input_queue.task_done()
+                    except Exception as e:
+                        print(f"[SERVER] Processor Error: {e}")
+                        traceback.print_exc()
+
+                await asyncio.gather(
+                    gemini_to_client(),
+                    websocket_receiver(),
+                    queue_processor(),
+                )
 
         except Exception as e:
-            print(f"[SERVER] Fatal Error: {e}")
+            print(f"[SERVER] FATAL: {e}")
             traceback.print_exc()
         finally:
-            print("[SERVER] Session ended.")
+            print("[SERVER] Closing Session.")
             try:
                 await websocket.close()
-            except:
+            except Exception:
                 pass
 
-# Global voice handler instance
+
 voice_handler = VoiceHandler()

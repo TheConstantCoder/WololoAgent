@@ -29,13 +29,22 @@ class HotkeyListener:
 
     def _on_press(self, key):
         """Internal callback for key press."""
-        if key == self.ptt_key and not self.is_pressed:
+        # Check for both generic ctrl and specific left/right ctrl
+        is_ctrl = key == keyboard.Key.ctrl or key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r
+        
+        target_match = (key == self.ptt_key) or (self.ptt_key == keyboard.Key.ctrl and is_ctrl)
+        
+        if target_match and not self.is_pressed:
             self.is_pressed = True
             self.on_press_callback()
 
     def _on_release(self, key):
         """Internal callback for key release."""
-        if key == self.ptt_key and self.is_pressed:
+        is_ctrl = key == keyboard.Key.ctrl or key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r
+        
+        target_match = (key == self.ptt_key) or (self.ptt_key == keyboard.Key.ctrl and is_ctrl)
+        
+        if target_match and self.is_pressed:
             self.is_pressed = False
             self.on_release_callback()
 
